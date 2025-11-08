@@ -1,0 +1,150 @@
+\documentclass[uplatex,dvipdfmx,a4j,12pt]{jsarticle}
+
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{comment}
+\usepackage{color}
+\usepackage{url}
+\usepackage{siunitx}
+\usepackage[version=4]{mhchem}
+\usepackage{paralist}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage[dvipdfmx]{hyperref}
+\usepackage{pxjahyper}
+\usepackage{enumitem}
+\setlist[description]{parsep=5pt}
+\setlist[enumerate]{parsep=5pt}
+\usepackage{here}
+\usepackage{mathtools}
+\usepackage{amssymb}
+\usepackage{physics}
+\usepackage{mathcomp}
+\usepackage{makecell}
+\usepackage{subcaption}
+
+\usepackage{cleveref}
+\crefname{figure}{図}{図}
+\crefname{equation}{式}{式}
+\crefname{table}{表}{表}
+\newcommand{\crefrangeconjunction}{から}
+\newcommand{\creflastconjunction}{、および}
+
+\newcommand{\diff}{\mathrm{d}} 
+
+\title{カラーコーン検出アルゴリズムについて}
+\author{kuma003 (\url{https://github.com/kuma003}, F.\@T.\@E.\@ 14th.\@)}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\newpage
+
+\section{はじめに}
+CanSatでは、最終的にゴールへ至るためにゴールコーンを認識する必要がある.
+そのため，カメラの入力映像からカラーコーンを何らかの手法で検出することが求められる．
+
+そこで本稿ではカラーコーン検出アルゴリズムについて，古典的な色相を用いる場合，逆投影法を用いる場合，
+そして機械学習を用いる場合の3つの手法を紹介し，それぞれの手法の特徴や精度についてまとめる．
+主にアルゴリズムについて焦点をあて，プログラムの詳細には立ち入らないこともあるため，適宜リファレンスを参照されたい．
+
+
+テストデータとして用いるデータについては筆者が撮影したものを用いるが，オープンにしづらい画像もあるため，
+比較的オープンにしやすい画像について，public\_datasetフォルダにまとめている．
+以下に用いるサンプルで用いる画像を示す．
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.4\linewidth]{../public_dataset/testdata.png}
+    \caption{サンプルで用いる画像.}
+    \label{fig:sample1}
+\end{figure}
+
+\section{色を取り扱う上で}
+\subsection{色空間}
+カラーコーン検出において，まず重要になるのが色の取り扱いである．
+一般的に，画像はRGBで表現されるのが一般的であるのは周知の事実である．
+色をRGBで指定することを\textbf{RGB空間}と呼ぶ．
+
+各色の強度を0から255までの256段階 (8ビット) で表現することが多いが，
+この場合，\texttt{(0, 0, 0)}が黒，\texttt{(255, 255, 255)}が白，\texttt{(255, 0, 0)}が赤，\texttt{(0, 255, 0)}が緑，\texttt{(0, 0, 255)}が青を表す．
+もしくは，16進数を用いて\texttt{0x000000}，\texttt{0x00FF00}のように表現することも多い．
+また，さらにアルファチャンネルという透明度を表す成分を加えたRGBAで表現されることもある．
+この場合，\texttt{0x00000000}が完全に透明な黒，\texttt{0xFFFFFFFF}が不透明な白を表す．
+
+画像の処理で頻繁に用いられるOpenCVというライブラリにおいても，画像は基本この三原色で表現される．
+ただし，\textbf{OpenCVでは画像はBGRの順番で表現される} ので注意が必要である
+\footnote{OpenCVが開発された初期のころ，BGR形式が一般的だったためらしい．
+\begin{quote}
+  The reason the early developers at OpenCV chose BGR color format is that back then BGR color format was popular among camera manufacturers and software providers. E.g. in Windows, when specifying color value using COLORREF they use the BGR format 0x00bbggrr.
+\end{quote}
+(\href{https://learnopencv.com/why-does-opencv-use-bgr-color-format/}{Why does OpenCV use BGR color format ?}より)
+}．
+そのため，例えばOpenCVで処理した画像をmatplotlibで表示すると色が変わって見えることがあるが，これはBGR表記に起因するものであり，そのときはRGBに変換する必要がある．
+
+\enskip
+
+RGB表記は色の三原色に基づくものであるが，あまり直観的ではない．
+画像処理をする上では，色相 (Hue)，彩度 (Saturation)，明度 (Value) の3つの成分で色を表現する\textbf{HSV空間}がよく用いられる．
+ペイントエディタなどでも直観的に色を選択できるように，\cref{fig:hsv_color_wheel}のようなHSVの色相環が用いられることが多い．
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.3\linewidth]{figs/HSV_space.png}
+    \caption{HSV色空間のイメージ図．(出典: \url{https://commons.wikimedia.org/wiki/File:Hsv_sample.png})}
+    \label{fig:hsv_color_wheel}
+\end{figure}
+
+実用上でも，その場の明るさによって明度が変化することはあるが，色相は比較的変化しづらいため，色相を用いた画像認識が有用である．
+なお，OpenCVでは\textbf{色相のみ範囲が0から179までの180段階で表現される}ことに注意が必要である
+\footnote{参考:\url{https://docs.opencv.org/4.x/df/d9d/tutorial_py_colorspaces.html}．ソフトウェアによって異なり，0から359までの範囲で表現されることもある．}．
+
+
+\subsection{色の演算}
+ここについては，本番には不要であるが，画像処理の解析を行う上で知っておくと便利な演算について説明する．
+読み飛ばしても差し支えない．
+
+簡単のために，各ピクセルごとに黒 (0) か 白 (1) の2値で表現される画像を考える．
+このような画像を\textbf{二値画像}と呼び，このような画像を作成することを\textbf{二値化}と呼ぶ．
+このような二値画像に対しては，AND，OR，NOTなどの論理演算を行うことができる．
+\begin{figure}[H]
+  \centering
+  \begin{minipage}
+    {0.3\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figs/AND.png}
+    \subcaption{AND演算.}
+  \end{minipage}
+  \begin{minipage}
+    {0.3\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{figs/OR.png}
+    \subcaption{OR演算.}
+  \end{minipage}
+  \caption{AND演算とOR演算 (出典: \url{https://commons.wikimedia.org/wiki/File:Venn0001.svg}, \url{https://commons.wikimedia.org/wiki/File:Venn0111.svg}).}
+  \label{fig:binary_image_operation}
+\end{figure}
+
+例えば，必要な領域を1，それ以外を0とした二値画像を用意する(このような画像を\textbf{マスク画像}と呼ぶ)．
+このマスク画像と元の画像に対してAND演算を行うことで，必要な領域だけを抽出することができる．
+また，マスク画像を複数用意し，OR演算を行うことで，複数の領域をまとめて抽出することもできる．
+本番で用いることは少ないが，処理の結果どこを検出したのかを可視化して解析する際には非常に有用である．
+
+
+\section{色相を用いる手法}
+色相を用いる手法は，カラーコーンの色相の範囲をあらかじめ決めておき，
+その範囲内にあるピクセルをカラーコーンとして検出することで実現される．
+非常に実装が容易であり，計算の負荷がとても低いため，堅実に動作する手法である．
+
+
+
+
+
+
+
+
+
+
+\end{document}
