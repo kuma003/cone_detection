@@ -16,6 +16,11 @@ if __name__ == "__main__":
     # Create a mask using the defined hue range
     mask = cv2.inRange(hsv_image, (lower_hue, 100, 0), (upper_hue, 255, 255))
 
+    # Apply morphological operations to clean up the mask
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_DILATE, cv2.getStructuringElement(cv2.MORPH_RECT, (25, 25))
+    )
+
     # Apply the mask to the original image
     result = cv2.bitwise_and(image, image, mask=mask)
 
